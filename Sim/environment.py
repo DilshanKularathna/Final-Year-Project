@@ -62,56 +62,87 @@ class Warehouse:
     # ─────────────────────────────────────────────────────────────────────
     def _place_shelves(self):
         """
-        Create a realistic rack layout:
-        - 4 rows of double-wide shelf blocks with aisle gaps between them.
-        - Leave a 2-cell border on every side so robots/humans can circulate.
+        Create the warehouse rack layout with pick/drop zones on shelves:
+        - 4 row-bands, each 2 rows tall, with blocks of 3 columns and 2-col gaps.
+        - The cells between shelf blocks remain as walkable aisles.
+        - Shelf cells themselves are obstacles that robots cannot traverse.
         """
-        # Shelf row bands (row indices, inclusive)
-        shelf_bands = [
+        # Shelf row bands (row indices: top_row, bottom_row inclusive)
+        self.shelf_bands = [
             (3, 4),
             (7, 8),
             (11, 12),
             (15, 16),
         ]
         # Shelf column spans — blocks of 3 cols with 2-col gaps
-        col_start = 4
-        col_end   = GRID_COLS - 4
-        for band_top, band_bot in shelf_bands:
+        self.shelf_col_start = 4
+        self.shelf_col_end   = GRID_COLS - 4
+
+        for band_top, band_bot in self.shelf_bands:
             if band_bot >= GRID_ROWS:
                 continue
-            col = col_start
-            while col + 2 <= col_end:
+            col = self.shelf_col_start
+            while col + 2 <= self.shelf_col_end:
                 for dr in range(band_top, band_bot + 1):
-                    for dc in range(col, min(col + 3, col_end)):
+                    for dc in range(col, min(col + 3, self.shelf_col_end)):
                         self.grid[dr][dc] = CELL_SHELF
                 col += 5  # 3 shelf + 2 gap
 
     def _place_zones(self):
         """
-        Designate left-edge cells as PICKUP, right-edge cells as DROPOFF.
+        Designate pick-up and drop-off zones:
+        1. Left-edge column (col 1)  → full-height PICKUP strip
+        2. Right-edge column (col GRID_COLS-2) → full-height DROPOFF strip
+        3. For each shelf band: top row of each shelf block → PICKUP,
+           bottom row of each shelf block → DROPOFF.
+
+        Layout per band (P=pick, D=drop):
+            P   PPP PPP PPP   D      (top row of band)
+            P   DDD DDD DDD   D      (bottom row of band)
         """
+        # ── Left / Right edge strips ─────────────────────────────────────
         for r in range(2, GRID_ROWS - 2):
-            # left-most column walkable area → pick-up
-            self.grid[r][1] = CELL_PICKUP
-            # right-most column walkable area → drop-off
-            self.grid[r][GRID_COLS - 2] = CELL_DROPOFF
+            self.grid[r][1] = CELL_PICKUP              # left pick column
+            self.grid[r][GRID_COLS - 2] = CELL_DROPOFF  # right drop column
+
+        # ── Shelf-block pick/drop zones ──────────────────────────────────
+        for band_top, band_bot in self.shelf_bands:
+            if band_bot >= GRID_ROWS:
+                continue
+            col = self.shelf_col_start
+            while col + 2 <= self.shelf_col_end:
+                for dc in range(col, min(col + 3, self.shelf_col_end)):
+                    # Top row of shelf block → PICKUP
+                    self.grid[band_top][dc] = CELL_PICKUP
+                    # Bottom row of shelf block → DROPOFF
+                    self.grid[band_bot][dc] = CELL_DROPOFF
+                col += 5  # 3 shelf + 2 gap
 
     # ─────────────────────────────────────────────────────────────────────
     # Waypoint / pathfinding helpers
     # ─────────────────────────────────────────────────────────────────────
     def _compute_waypoints(self):
-        """Return a list of (col, row) tuples for every walkable cell."""
+        """Return a list of (col, row) tuples for every walkable AISLE cell.
+        Pick/drop zones are excluded — they are obstacles for general movement."""
         pts = []
         for r in range(GRID_ROWS):
             for c in range(GRID_COLS):
-                if self.grid[r][c] != CELL_SHELF:
+                if self.grid[r][c] == CELL_AISLE:
                     pts.append((c, r))
         return pts
 
-    def is_walkable(self, col, row):
-        """Check whether a grid cell is walkable (not a shelf)."""
+    def is_walkable(self, col, row, allowed_cells=None):
+        """Check whether a grid cell is walkable.
+        Only CELL_AISLE is walkable by default.  CELL_SHELF, CELL_PICKUP,
+        and CELL_DROPOFF are all treated as obstacles unless the cell
+        appears in the *allowed_cells* set (used to let robots enter
+        pick/drop zones at their task start/goal)."""
         if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
-            return self.grid[row][col] != CELL_SHELF
+            cell = self.grid[row][col]
+            if cell == CELL_AISLE:
+                return True
+            if allowed_cells and (col, row) in allowed_cells:
+                return True
         return False
 
     def cell_center(self, col, row):
@@ -124,15 +155,16 @@ class Warehouse:
         return int(px // CELL_SIZE), int(py // CELL_SIZE)
 
     def random_walkable_pixel(self):
-        """Return a random pixel position on a walkable cell."""
+        """Return a random pixel position on a walkable AISLE cell."""
         wp = random.choice(self.waypoints)
         return self.cell_center(*wp)
 
-    def get_neighbors(self, col, row):
-        """Yield walkable 4-connected neighbours of (col, row)."""
+    def get_neighbors(self, col, row, allowed_cells=None):
+        """Yield walkable 4-connected neighbours of (col, row).
+        *allowed_cells* overrides obstacle checks (for pick/drop endpoints)."""
         for dc, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
             nc, nr = col + dc, row + dr
-            if self.is_walkable(nc, nr):
+            if self.is_walkable(nc, nr, allowed_cells):
                 yield (nc, nr)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -160,6 +192,9 @@ class Warehouse:
         if blocked_cells is None:
             blocked_cells = set()
 
+        # Allow start and goal cells even if they are pick/drop zones
+        allowed_cells = {(sc, sr), (gc, gr)}
+
         # heuristic — Manhattan distance
         def h(c, r):
             return abs(c - gc) + abs(r - gr)
@@ -183,7 +218,7 @@ class Warehouse:
                 path.reverse()
                 return path
 
-            for nc, nr in self.get_neighbors(cc, cr):
+            for nc, nr in self.get_neighbors(cc, cr, allowed_cells):
                 if (nc, nr) in blocked_cells:
                     continue
                 tentative = cost + 1
@@ -221,6 +256,9 @@ class Warehouse:
         if blocked_cells is None:
             blocked_cells = set()
 
+        # Allow start and goal cells even if they are pick/drop zones
+        allowed_cells = {(sc, sr), (gc, gr)}
+
         def h(c, r):
             return abs(c - gc) + abs(r - gr)
 
@@ -254,7 +292,7 @@ class Warehouse:
                     best_path = path
                     break
 
-                for nc, nr in self.get_neighbors(cc, cr):
+                for nc, nr in self.get_neighbors(cc, cr, allowed_cells):
                     if (nc, nr) in blocked_cells:
                         continue
                     tentative = cost + 1
@@ -282,6 +320,9 @@ class Warehouse:
         """
         sc, sr = self.pixel_to_grid(*start_pixel)
         gc, gr = self.pixel_to_grid(*goal_pixel)
+
+        # Allow start and goal cells even if they are pick/drop zones
+        allowed_cells = {(sc, sr), (gc, gr)}
 
         def h(c, r):
             return abs(c - gc) + abs(r - gr)
@@ -311,7 +352,7 @@ class Warehouse:
                 continue
 
             # Candidate next actions at time t+1: 4-way move OR wait in place
-            candidates = list(self.get_neighbors(cc, cr)) + [(cc, cr)]
+            candidates = list(self.get_neighbors(cc, cr, allowed_cells)) + [(cc, cr)]
             for nc, nr in candidates:
                 nt = ct + 1
                 # 1. Vertex collision check: Is cell (nc, nr) reserved at time nt?
@@ -372,3 +413,5 @@ class Warehouse:
         surface.blit(lbl_p, (1 * CELL_SIZE + 2, 1 * CELL_SIZE + 2))
         surface.blit(lbl_d, ((GRID_COLS - 2) * CELL_SIZE + 2,
                              1 * CELL_SIZE + 2))
+
+
