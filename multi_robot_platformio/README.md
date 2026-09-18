@@ -98,3 +98,16 @@ picks it up automatically.
   If a library on this path is nonstandard (missing `library.properties`,
   unusual folder layout) and PlatformIO's LDF fails to detect it, the
   fallback is to copy just that library folder directly into `lib/`.
+
+## Limitations
+
+| Area | Limitation | Workaround / Mitigation |
+|------|------------|-------------------------|
+| **Shared 3rd-party libs via `lib_extra_dirs`** | Single version on disk — all robots get the same version of Arduino-sketchbook libraries (e.g., Smorphi). No per-robot version pinning. | Vendor a copy into `lib/` for the robot that needs a different version, or switch that specific lib to `lib_deps` with a pinned Git tag/commit. |
+| **Hardcoded `upload_port`** | Ports (COM5–COM10) are fixed in `platformio.ini`. If a robot enumerates on a different port, upload fails. | Use `platformio device list` before upload; on Linux/macOS use glob patterns (`/dev/ttyUSB*`). For Windows, a pre-upload script that matches by USB serial number / VID:PID is more robust. |
+| **Build-time only isolation** | `build_src_filter` isolates source at compile time. Runtime communication (MQTT, ESP-NOW, UART) is not managed — robots can still interfere if they share topics/channels. | Define a clear message schema (your `RobotComms` JSON) and unique per-robot topics/client IDs. Consider a fleet config service for runtime coordination. |
+| **No per-robot `board_build` overrides in shared `[env]`** | All robots inherit the same `framework = arduino` and `monitor_speed`. If one robot needs a different framework (e.g., ESP-IDF) or monitor speed, it must override explicitly. | Add `framework = espidf` or `monitor_speed = 921600` in that robot's `[env:robotN]` section — it will override the shared `[env]` value. |
+| **Single `platformio.ini` grows with robot count** | Beyond ~10–15 robots, the ini file becomes long and repetitive. | Extract common blocks into a generated file (Python/Jinja2 template) or split into multiple `.ini` files with `include` (PlatformIO 6.1+), though this adds complexity. |
+| **No built-in OTA / fleet upload** | `platformio run -e robotN --target upload` is wired (USB). No native OTA or parallel multi-robot upload. | Implement OTA in firmware (ArduinoOTA, ESP-NOW, HTTP) and trigger via a separate script / CI job. |
+| **LDF quirks with `lib_extra_dirs`** | Libraries in the Arduino sketchbook folder without `library.properties` or with nonstandard layouts may not be detected. | Copy problematic libs into `lib/` (vendored) so PlatformIO's LDF sees them as project-local libraries. |
+| **Windows COM port limit** | Traditional COM ports only go up to COM256. With many robots, you may hit this. | Use USB hubs with stable enumeration, or switch to network-based upload (OTA) for large fleets. |

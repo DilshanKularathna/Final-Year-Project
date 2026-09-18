@@ -98,3 +98,60 @@ STATE_COLORS = {
     STATE_YIELDING:   COLOR_ROBOT_YIELDING,
     STATE_REROUTING:  COLOR_ROBOT_REROUTING,
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unit Conversion
+# ─────────────────────────────────────────────────────────────────────────────
+PIXELS_PER_METER = 80.0           # 1 grid cell (40 px) = 0.5 m
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Simulation Phase
+# ─────────────────────────────────────────────────────────────────────────────
+SIM_PHASE = "operation"           # "mapping" | "operation"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Map of Dynamics (MoD) Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+MAP_OF_DYNAMICS = {
+    # ── Feature flag ─────────────────────────────────────────────────────
+    "enabled": True,
+
+    # ── Risk equation weights ────────────────────────────────────────────
+    "alpha": 0.6,                   # weight of long-term habit P
+    "beta": 0.3,                    # weight of short-term recency
+    "half_life_s": 20.0,            # recency decay half-life in seconds
+
+    # ── Observation window ───────────────────────────────────────────────
+    "window_s": 2.0,                # observation window length in seconds
+
+    # ── Bayesian prior (Laplace / Beta smoothing) ────────────────────────
+    "prior_a": 0.5,                 # pseudo-count for human-present
+    "prior_b": 9.5,                 # pseudo-count for human-absent
+    # => prior P0 = a / (a + b) = 0.05
+
+    # ── Human model ──────────────────────────────────────────────────────
+    "human_radius_m": 0.35,         # disc radius stamped at detection (metres)
+
+    # ── Forgetting (optional, None = off) ────────────────────────────────
+    "forgetting_tau_s": None,       # exponential forgetting time constant
+
+    # ── Risk recomputation rate ──────────────────────────────────────────
+    "risk_update_hz": 5.0,          # how often risk layer is recomputed
+
+    # ── Sensing parameters ───────────────────────────────────────────────
+    "sensor_fov_deg": 360.0,        # field of view in degrees (360 = omnidirectional)
+    "sensor_max_range_m": 3.0,      # maximum sensor range in metres
+    "sensor_n_rays": 180,           # number of rays for visibility estimation
+    "detection_mode": "ground_truth",  # "ground_truth" | "lidar_dynamic_points"
+    "detection_prob": 1.0,          # probability of detecting a visible human
+    "pos_noise_m": 0.0,             # Gaussian noise σ added to detected position (metres)
+    "pose_noise_m": 0.0,            # Gaussian noise σ added to robot pose (metres)
+
+    # ── Snapshot export ──────────────────────────────────────────────────
+    "snapshot_interval_s": 30.0,    # auto-export snapshot every N sim-seconds (0 = off)
+    "snapshot_dir": "outputs/mod_snapshots",
+
+    # ── Planner hook (optional, default OFF) ─────────────────────────────
+    "planner_hook_enabled": False,
+    "planner_k_risk": 2.0,         # risk cost multiplier for edge_cost
+}

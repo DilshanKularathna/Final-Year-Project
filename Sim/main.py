@@ -4,6 +4,10 @@ main.py — Simulation Entry Point
 Initializes Pygame, spawns the warehouse / robots / human / coordinator,
 runs the game loop (tick → update → render → telemetry), and handles
 quit events.
+
+MoD Integration: When MAP_OF_DYNAMICS["enabled"] is True, the main loop
+also runs the visibility estimator, human detector, and MoD engine each
+tick, and renders the risk overlay.
 """
 
 import sys
@@ -15,6 +19,7 @@ from config import (
     PROXEMIC_INNER_RADIUS, PROXEMIC_OUTER_RADIUS,
     COLOR_PROXEMIC_INNER, COLOR_PROXEMIC_OUTER,
     COLOR_TEXT, COLOR_TEXT_DIM,
+    MAP_OF_DYNAMICS,
 )
 from environment import Warehouse
 from human import HumanWorker
@@ -102,6 +107,52 @@ def main():
 
     coordinator = Coordinator(warehouse, robots, humans)
 
+    # ── MoD initialisation (feature-flagged) ─────────────────────────────
+    mod_enabled = MAP_OF_DYNAMICS.get("enabled", False)
+    mod_engine = None
+    mod_overlay = None
+    mod_visibility = None
+    mod_detector = None
+    detections_by_robot = {}
+
+    if mod_enabled:
+        from mod.static_map import StaticMap
+        from mod.mod_core import MapOfDynamics, MoDConfig
+        from mod.visibility import VisibilityEstimator
+        from mod.detection import HumanDetector
+        from mod.overlay import MoDOverlay
+
+        static_map = StaticMap(warehouse.grid)
+
+        mod_cfg = MoDConfig.from_dict(MAP_OF_DYNAMICS)
+        mod_engine = MapOfDynamics(static_map, mod_cfg)
+
+        mod_visibility = VisibilityEstimator(
+            static_map,
+            fov_deg=MAP_OF_DYNAMICS.get("sensor_fov_deg", 360.0),
+            max_range_m=MAP_OF_DYNAMICS.get("sensor_max_range_m", 5.0),
+            n_rays=MAP_OF_DYNAMICS.get("sensor_n_rays", 180),
+        )
+
+        mod_detector = HumanDetector(
+            static_map,
+            mode=MAP_OF_DYNAMICS.get("detection_mode", "ground_truth"),
+            fov_deg=MAP_OF_DYNAMICS.get("sensor_fov_deg", 360.0),
+            max_range_m=MAP_OF_DYNAMICS.get("sensor_max_range_m", 5.0),
+            human_radius_m=MAP_OF_DYNAMICS.get("human_radius_m", 0.35),
+            detection_prob=MAP_OF_DYNAMICS.get("detection_prob", 1.0),
+            pos_noise_m=MAP_OF_DYNAMICS.get("pos_noise_m", 0.0),
+        )
+
+        mod_overlay = MoDOverlay(mod_engine, static_map, MAP_OF_DYNAMICS)
+
+        print("[MoD] Map of Dynamics ENABLED  "
+              f"(α={mod_cfg.alpha}, β={mod_cfg.beta}, "
+              f"λ={mod_cfg.lambd:.4f}, T½={mod_cfg.half_life_s}s)",
+              flush=True)
+    else:
+        print("[MoD] Map of Dynamics DISABLED", flush=True)
+
     print("=" * 65)
     print("  WAREHOUSE SIMULATION STARTED")
     print(f"  Robots: {len(robots)}  |  Humans: {len(humans)}  |  Grid: {warehouse.grid.__len__()}x"
@@ -110,7 +161,10 @@ def main():
 
     # ── Main loop ────────────────────────────────────────────────────────
     frame = 0
+    sim_time_s = 0.0  # simulation time in seconds
+    dt = 1.0 / FPS    # time step per frame
     running = True
+
     while running:
         # ── events ───────────────────────────────────────────────────────
         for event in pygame.event.get():
@@ -119,6 +173,9 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                # MoD keyboard controls
+                elif mod_overlay is not None:
+                    mod_overlay.handle_key(event.key, sim_time_s, screen)
 
         # ── update ───────────────────────────────────────────────────────
         for h in humans:
@@ -127,8 +184,44 @@ def main():
         for robot in robots:
             robot.update()
 
+        # ── MoD update (feature-flagged) ─────────────────────────────────
+        if mod_enabled and mod_engine is not None:
+            detections_by_robot = {}
+            for robot in robots:
+                # Robot pose (with optional noise)
+                rx, ry = robot.x, robot.y
+                r_angle = robot.angle
+                pose_noise = MAP_OF_DYNAMICS.get("pose_noise_m", 0.0)
+                if pose_noise > 0:
+                    from mod.static_map import StaticMap as _SM
+                    noise_px = _SM(warehouse.grid).meters_to_pixels(pose_noise)
+                    rx += random.gauss(0, noise_px)
+                    ry += random.gauss(0, noise_px)
+
+                # Visibility
+                vis_mask = mod_visibility.visible_cells(rx, ry, r_angle)
+
+                # Detection
+                dets, human_mask = mod_detector.detect(
+                    rx, ry, r_angle, humans, sim_time_s,
+                    visible_mask=vis_mask)
+
+                detections_by_robot[robot.id] = dets
+
+                # Integrate into MoD
+                mod_engine.integrate(robot.id, vis_mask, human_mask, sim_time_s)
+
+            # MoD step (window close, risk recomputation)
+            mod_engine.step(sim_time_s)
+
         # ── render ───────────────────────────────────────────────────────
         warehouse.draw(screen)
+
+        # MoD overlay (between warehouse and agents)
+        if mod_overlay is not None:
+            mod_overlay.draw(screen, sim_time_s, robots, humans,
+                             detections_by_robot)
+
         for h in humans:
             _draw_proxemic_zones(screen, h)
             h.draw(screen)
@@ -139,6 +232,7 @@ def main():
         pygame.display.flip()
         clock.tick(FPS)
         frame += 1
+        sim_time_s += dt
 
     pygame.quit()
     sys.exit()
